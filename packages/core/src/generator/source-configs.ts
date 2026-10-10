@@ -46,7 +46,7 @@ export function buildSourceProxyProviders(sources: SourceClashConfig[], nodes: P
 export function mergeSourceClashConfigs(generated: Record<string, unknown>, sources: SourceClashConfig[], nodes: ParsedNode[]): Record<string, unknown> {
   if (!sources.length) return generated;
   let base: Record<string, unknown> = {};
-  const dnsSelfAddresses = new Set<string>();
+  const localDnsPorts = new Set<string>();
 
   for (const source of sources) {
     const config = source.config;
@@ -56,8 +56,8 @@ export function mergeSourceClashConfigs(generated: Record<string, unknown>, sour
     const policy = (name: string) => builtins.has(name) ? name : nodeNames.get(name);
 
     if (record(config.dns) && typeof config.dns.listen === "string") {
-      const listener = config.dns.listen.replace(/^0\.0\.0\.0:/, "127.0.0.1:");
-      dnsSelfAddresses.add("udp://" + listener);
+      const port = config.dns.listen.match(/:(\d+)$/)?.[1];
+      if (port) localDnsPorts.add(port);
     }
     const metadata = Object.fromEntries(Object.entries(config).filter(([key]) => !["proxies", "proxy-groups", "rules", "sub-rules", "proxy-providers", "rule-providers"].includes(key)));
     if (Array.isArray(metadata.listeners)) {
@@ -95,14 +95,22 @@ export function mergeSourceClashConfigs(generated: Record<string, unknown>, sour
     }
   }
   if (record(result.hosts) && Object.keys(result.hosts).length && record(result.dns)) result.dns["use-hosts"] = true;
-  // Original configurations can refer to their own DNS port. The merged config has one listener.
+  // A client's DNS listener may return fake-IP answers. Never use it to resolve proxy entries.
   if (record(result.dns) && Array.isArray(result.dns["proxy-server-nameserver"])) {
     const dns = result.dns;
-    const listen = typeof dns.listen === "string" ? dns.listen.replace(/^0\.0\.0\.0:/, "127.0.0.1:") : undefined;
-    result.dns["proxy-server-nameserver"] = result.dns["proxy-server-nameserver"].flatMap(server => {
-      if (typeof server !== "string" || !dnsSelfAddresses.has(server)) return [server];
-      return listen ? ["udp://" + listen] : Array.isArray(dns.nameserver) ? dns.nameserver : [];
+    const port = typeof dns.listen === "string" ? dns.listen.match(/:(\d+)$/)?.[1] : undefined;
+    if (port) localDnsPorts.add(port);
+    const upstreams = result.dns["proxy-server-nameserver"].filter(server => {
+      if (typeof server !== "string") return true;
+      try {
+        const target = new URL(server.includes("://") ? server : "udp://" + server);
+        const host = target.hostname.replace(/^\[|\]$/g, "");
+        return !["localhost", "127.0.0.1", "0.0.0.0", "::", "::1"].includes(host)
+          || !localDnsPorts.has(target.port || "53");
+      } catch { return true; }
     });
+    if (upstreams.length) dns["proxy-server-nameserver"] = upstreams;
+    else delete dns["proxy-server-nameserver"];
   }
   return result;
 }
