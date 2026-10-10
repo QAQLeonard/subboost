@@ -193,6 +193,26 @@ export async function refreshNodeSnapshot(
     });
   };
 
+  const sourceNameOptions = (source: SavedSource) => ({
+    currentTag: source.useProxyProviders ? undefined : source.tag,
+    currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
+  });
+  const mergeSourceNodes = (source: SavedSource, nodes: ParsedNode[]) => {
+    const names = sourceNameOptions(source);
+    const merged = mergeParsedSourceNodes(currentNodes, prepareSourceParsedNodes(nodes, names), deletedNodeNames, {
+      sourceId: source.id,
+      ...names,
+      lastTag: source.lastParsedTag,
+      lastNameTemplate: source.lastParsedNameTemplate,
+      treatAsNewSource: source.type === "url" && Boolean(source.lastParsedContent?.trim()
+        && source.lastParsedContent.trim() !== source.content.trim()),
+      smartNodeMatchingEnabled,
+      deletedNodes,
+    });
+    renameMap = composeNodeNameRenameMaps(renameMap, merged.renameMap);
+    currentNodes = merged.nodes;
+  };
+
   const shouldFetchSupplementalUserInfoForSource = (source: SavedSource): boolean => {
     return Boolean(source.userinfoUrl || source.userinfoUserAgent);
   };
@@ -236,27 +256,7 @@ export async function refreshNodeSnapshot(
       refreshedSavedSources = refreshedSavedSources.map(item => item.id === source.id
         ? { ...item, sourceSnapshot: createSourceSnapshot(fetched.nodes, fetched.sourceConfig, fetched.headers, resolvedHosts, source.sourceSnapshot) } : item);
 
-      const parsedNodes = prepareSourceParsedNodes(fetched.nodes, {
-        currentTag: source.useProxyProviders ? undefined : source.tag,
-        currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
-      });
-      const merged = mergeParsedSourceNodes(currentNodes, parsedNodes, deletedNodeNames, {
-        sourceId: source.id,
-        currentTag: source.useProxyProviders ? undefined : source.tag,
-        currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
-        lastTag: source.lastParsedTag,
-        lastNameTemplate: source.lastParsedNameTemplate,
-        treatAsNewSource: Boolean(
-          source.lastParsedContent &&
-            source.lastParsedContent.trim() &&
-            source.lastParsedContent.trim() !== source.content.trim()
-        ),
-        smartNodeMatchingEnabled,
-        deletedNodes,
-      });
-
-      renameMap = composeNodeNameRenameMaps(renameMap, merged.renameMap);
-      currentNodes = merged.nodes;
+      mergeSourceNodes(source, fetched.nodes);
       usedUrlFetch = true;
       refreshedSourceCount += 1;
       refreshedUrlSourceCount += 1;
@@ -275,23 +275,7 @@ export async function refreshNodeSnapshot(
       refreshedSavedSources = refreshedSavedSources.map(item => item.id === source.id
         ? { ...item, sourceSnapshot: createSourceSnapshot(parsed.nodes, parsed.sourceConfig, undefined, resolvedHosts) } : item);
 
-      const parsedNodes = prepareSourceParsedNodes(parsed.nodes, {
-        currentTag: source.useProxyProviders ? undefined : source.tag,
-        currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
-      });
-      const merged = mergeParsedSourceNodes(currentNodes, parsedNodes, deletedNodeNames, {
-        sourceId: source.id,
-        currentTag: source.useProxyProviders ? undefined : source.tag,
-        currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
-        lastTag: source.lastParsedTag,
-        lastNameTemplate: source.lastParsedNameTemplate,
-        treatAsNewSource: false,
-        smartNodeMatchingEnabled,
-        deletedNodes,
-      });
-
-      renameMap = composeNodeNameRenameMaps(renameMap, merged.renameMap);
-      currentNodes = merged.nodes;
+      mergeSourceNodes(source, parsed.nodes);
       refreshedSourceCount += 1;
       refreshedStaticSourceCount += 1;
     } catch (error) {
@@ -320,9 +304,9 @@ export async function refreshNodeSnapshot(
       const ids = (node as unknown as Record<string, unknown>)._sourceIds;
       return Array.isArray(ids) && ids.includes(source.id);
     })) {
-      const prepared = prepareSourceParsedNodes(source.sourceSnapshot.nodes, { currentTag: source.useProxyProviders ? undefined : source.tag, currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate });
+      const prepared = prepareSourceParsedNodes(source.sourceSnapshot.nodes, sourceNameOptions(source));
       currentNodes = mergeParsedSourceNodes(currentNodes, prepared, deletedNodeNames, {
-        sourceId: source.id, currentTag: source.useProxyProviders ? undefined : source.tag, currentNameTemplate: source.useProxyProviders ? undefined : source.nameTemplate,
+        sourceId: source.id, ...sourceNameOptions(source),
         lastTag: source.lastParsedTag, lastNameTemplate: source.lastParsedNameTemplate,
         treatAsNewSource: false, deletedNodes,
       }).nodes;

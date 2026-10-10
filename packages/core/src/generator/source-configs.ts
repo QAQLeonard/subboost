@@ -3,6 +3,14 @@ import { getNodeOriginName, getNodeSourceIds } from "../subscription/node-source
 
 export interface SourceClashConfig { id: string; config: Record<string, unknown>; resolvedHosts?: Record<string, string[]> }
 const record = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
+const BUILTIN_POLICIES = new Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"]);
+const MANAGED_SECTIONS = new Set(["proxies", "proxy-groups", "rules", "sub-rules", "proxy-providers", "rule-providers"]);
+
+function sourcePolicy(sourceId: string, nodes: ParsedNode[]) {
+  const names = new Map(nodes.filter(node => getNodeSourceIds(node).includes(sourceId))
+    .map(node => [getNodeOriginName(node), node.name]));
+  return (name: string) => BUILTIN_POLICIES.has(name) ? name : names.get(name);
+}
 
 // Subscription order resolves collisions; explicit SubBoost settings take precedence.
 function merge(left: unknown, right: unknown): unknown {
@@ -24,13 +32,12 @@ export function buildSourceProxyProviders(sources: SourceClashConfig[], nodes: P
   for (const source of sources) {
     const raw = source.config["proxy-providers"];
     if (!record(raw)) continue;
-    const nodeNames = new Map(nodes.filter(node => getNodeSourceIds(node).includes(source.id))
-      .map(node => [getNodeOriginName(node), node.name]));
+    const policy = sourcePolicy(source.id, nodes);
     for (const [name, value] of Object.entries(raw)) {
       if (!record(value)) continue;
       const provider = structuredClone(value);
-      if (typeof provider.proxy === "string" && !["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"].includes(provider.proxy)) {
-        const target = nodeNames.get(provider.proxy);
+      if (typeof provider.proxy === "string") {
+        const target = policy(provider.proxy);
         if (target) provider.proxy = target;
         else delete provider.proxy;
       }
@@ -50,16 +57,13 @@ export function mergeSourceClashConfigs(generated: Record<string, unknown>, sour
 
   for (const source of sources) {
     const config = source.config;
-    const nodeNames = new Map<string, string>();
-    for (const node of nodes) if (getNodeSourceIds(node).includes(source.id)) nodeNames.set(getNodeOriginName(node), node.name);
-    const builtins = new Set(["DIRECT", "REJECT", "REJECT-DROP", "PASS", "COMPATIBLE"]);
-    const policy = (name: string) => builtins.has(name) ? name : nodeNames.get(name);
+    const policy = sourcePolicy(source.id, nodes);
 
     if (record(config.dns) && typeof config.dns.listen === "string") {
       const port = config.dns.listen.match(/:(\d+)$/)?.[1];
       if (port) localDnsPorts.add(port);
     }
-    const metadata = Object.fromEntries(Object.entries(config).filter(([key]) => !["proxies", "proxy-groups", "rules", "sub-rules", "proxy-providers", "rule-providers"].includes(key)));
+    const metadata = Object.fromEntries(Object.entries(config).filter(([key]) => !MANAGED_SECTIONS.has(key)));
     if (Array.isArray(metadata.listeners)) {
       metadata.listeners = metadata.listeners.flatMap(listener => {
         if (!record(listener) || typeof listener.proxy !== "string") return [listener];

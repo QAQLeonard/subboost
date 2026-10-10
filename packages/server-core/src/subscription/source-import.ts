@@ -231,6 +231,19 @@ async function fetchSupplementalUserInfoHeaders(
   return response.ok ? normalizeHeaders(response.headers) : {};
 }
 
+const DEFAULT_USERINFO_USER_AGENT = "ClashforWindows/0.20.39";
+const hasUserinfo = (header: string | undefined) => hasSubscriptionUserInfo(parseSubscriptionUserInfo(header ?? ""));
+
+function mergeConfig(left: Record<string, unknown>, right: Record<string, unknown>): Record<string, unknown> {
+  const merged = structuredClone(left);
+  for (const [key, value] of Object.entries(right)) {
+    const old = merged[key];
+    merged[key] = old && value && typeof old === "object" && typeof value === "object" && !Array.isArray(old) && !Array.isArray(value)
+      ? mergeConfig(old as Record<string, unknown>, value as Record<string, unknown>) : structuredClone(value);
+  }
+  return merged;
+}
+
 export async function importSubscriptionFromUrl(
   request: SourceImportRequest,
   options: {
@@ -284,7 +297,7 @@ export async function importSubscriptionFromUrl(
     if (attempt.ok && isUsableParsedAttempt(attempt)) {
       if (attempt.parsed.sourceConfig) sourceConfigs.push(attempt.parsed.sourceConfig);
       const header = attempt.headers["subscription-userinfo"];
-      if (!userinfoHeader && header && hasSubscriptionUserInfo(parseSubscriptionUserInfo(header))) userinfoHeader = header;
+      if (!userinfoHeader && hasUserinfo(header)) userinfoHeader = header;
     }
     best = pickBetterAttempt(best, attempt, diagnostics);
   }
@@ -294,35 +307,27 @@ export async function importSubscriptionFromUrl(
   }
 
   const headers = { ...best.headers };
-  if (!hasSubscriptionUserInfo(parseSubscriptionUserInfo(headers["subscription-userinfo"] ?? "")) && userinfoHeader) {
+  if (!hasUserinfo(headers["subscription-userinfo"]) && userinfoHeader) {
     headers["subscription-userinfo"] = userinfoHeader;
   }
-  const needsSupplemental = Boolean(request.userinfoUrl || request.userinfoUserAgent)
-    || !hasSubscriptionUserInfo(parseSubscriptionUserInfo(headers["subscription-userinfo"] ?? ""));
-  const supplementalRequest = request.userinfoUrl || request.userinfoUserAgent
-    ? request : { ...request, userinfoUserAgent: "ClashforWindows/0.20.39" };
+  const explicitUserinfo = Boolean(request.userinfoUrl || request.userinfoUserAgent);
+  const needsSupplemental = explicitUserinfo
+    || !hasUserinfo(headers["subscription-userinfo"]);
+  const supplementalRequest = explicitUserinfo
+    ? request : { ...request, userinfoUserAgent: DEFAULT_USERINFO_USER_AGENT };
   const supplementalHeaders = !needsSupplemental || budget.remainingTimeout() === 0 ? {} : await fetchSupplementalUserInfoHeaders(supplementalRequest, {
     timeoutMs: budget.remainingTimeout(),
     maxBytes,
     fetchText: options.fetchText,
   }, url).catch(() => ({}));
-  if (request.userinfoUrl || request.userinfoUserAgent) Object.assign(headers, supplementalHeaders);
-  else if (hasSubscriptionUserInfo(parseSubscriptionUserInfo(supplementalHeaders["subscription-userinfo"] ?? ""))) {
+  if (explicitUserinfo) Object.assign(headers, supplementalHeaders);
+  else if (hasUserinfo(supplementalHeaders["subscription-userinfo"])) {
     headers["subscription-userinfo"] = supplementalHeaders["subscription-userinfo"];
   }
 
   // Profile negotiation may choose richer nodes from a URI-only response. Keep
   // metadata obtained from a valid YAML response instead of dropping its hosts,
   // DNS and other sections merely because the winning format has no such fields.
-  const mergeConfig = (left: Record<string, unknown>, right: Record<string, unknown>): Record<string, unknown> => {
-    const merged = structuredClone(left);
-    for (const [key, value] of Object.entries(right)) {
-      const old = merged[key];
-      merged[key] = old && value && typeof old === "object" && typeof value === "object" && !Array.isArray(old) && !Array.isArray(value)
-        ? mergeConfig(old as Record<string, unknown>, value as Record<string, unknown>) : structuredClone(value);
-    }
-    return merged;
-  };
   let sourceConfig = sourceConfigs.reduce((config, next) => mergeConfig(next, config), {});
   if (best.parsed.sourceConfig) sourceConfig = mergeConfig(sourceConfig, best.parsed.sourceConfig);
 
