@@ -10,6 +10,7 @@ import {
   type SubscriptionImportErrorInfo,
 } from "@subboost/core/subscription/import-error";
 import { tryNormalizeSubscriptionUrlInput } from "@subboost/core/subscription/url-input";
+import { hasSubscriptionUserInfo, parseSubscriptionUserInfo } from "@subboost/core/subscription/subscription-userinfo";
 import type { ParseResult, ParsedNode } from "@subboost/core/types/node";
 import { compareSubscriptionSnapshots, createSubscriptionRequestBudget, hasUsableSubscriptionSnapshot, SUBSCRIPTION_MAX_PROFILE_REQUESTS,
   type SubscriptionSnapshotComparison } from "./snapshot-comparison";
@@ -269,6 +270,7 @@ export async function importSubscriptionFromUrl(
   const diagnostics: SubscriptionSnapshotComparison[] = [];
   let best: ParsedAttempt | null = null;
   const sourceConfigs: Record<string, unknown>[] = [];
+  let userinfoHeader: string | undefined;
 
   for (let index = 0; index < userAgents.length; index += 1) {
     const userAgent = userAgents[index];
@@ -279,7 +281,11 @@ export async function importSubscriptionFromUrl(
       maxBytes,
       fetchText: options.fetchText,
     });
-    if (attempt.ok && isUsableParsedAttempt(attempt) && attempt.parsed.sourceConfig) sourceConfigs.push(attempt.parsed.sourceConfig);
+    if (attempt.ok && isUsableParsedAttempt(attempt)) {
+      if (attempt.parsed.sourceConfig) sourceConfigs.push(attempt.parsed.sourceConfig);
+      const header = attempt.headers["subscription-userinfo"];
+      if (!userinfoHeader && header && hasSubscriptionUserInfo(parseSubscriptionUserInfo(header))) userinfoHeader = header;
+    }
     best = pickBetterAttempt(best, attempt, diagnostics);
   }
 
@@ -287,11 +293,23 @@ export async function importSubscriptionFromUrl(
     return toFailure(best);
   }
 
-  const supplementalHeaders = budget.remainingTimeout() === 0 ? {} : await fetchSupplementalUserInfoHeaders(request, {
+  const headers = { ...best.headers };
+  if (!hasSubscriptionUserInfo(parseSubscriptionUserInfo(headers["subscription-userinfo"] ?? "")) && userinfoHeader) {
+    headers["subscription-userinfo"] = userinfoHeader;
+  }
+  const needsSupplemental = Boolean(request.userinfoUrl || request.userinfoUserAgent)
+    || !hasSubscriptionUserInfo(parseSubscriptionUserInfo(headers["subscription-userinfo"] ?? ""));
+  const supplementalRequest = request.userinfoUrl || request.userinfoUserAgent
+    ? request : { ...request, userinfoUserAgent: "ClashforWindows/0.20.39" };
+  const supplementalHeaders = !needsSupplemental || budget.remainingTimeout() === 0 ? {} : await fetchSupplementalUserInfoHeaders(supplementalRequest, {
     timeoutMs: budget.remainingTimeout(),
     maxBytes,
     fetchText: options.fetchText,
   }, url).catch(() => ({}));
+  if (request.userinfoUrl || request.userinfoUserAgent) Object.assign(headers, supplementalHeaders);
+  else if (hasSubscriptionUserInfo(parseSubscriptionUserInfo(supplementalHeaders["subscription-userinfo"] ?? ""))) {
+    headers["subscription-userinfo"] = supplementalHeaders["subscription-userinfo"];
+  }
 
   // Profile negotiation may choose richer nodes from a URI-only response. Keep
   // metadata obtained from a valid YAML response instead of dropping its hosts,
@@ -311,7 +329,7 @@ export async function importSubscriptionFromUrl(
   return {
     ok: true,
     content: best.content,
-    headers: { ...best.headers, ...supplementalHeaders },
+    headers,
     parsedNodes: best.parsed.nodes,
     ...(Object.keys(sourceConfig).length ? { sourceConfig } : {}),
     parseErrors: best.parsed.errors,

@@ -22,7 +22,8 @@ describe("local guarded snapshot negotiation", () => {
     vi.stubGlobal("fetch", fetch);
     const result = await importSourceUrlDirect({ url: "https://local.subboost.test/sub" });
     expect(result).toMatchObject({ ok: true, parsedNodes: [expect.objectContaining({ type: "ss" }), expect.objectContaining({ type: "anytls" })], headers: { profile: "clash-verge/v2.5.2" } });
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.filter(([, options]) => options.method === "GET")).toHaveLength(4);
+    expect(fetch.mock.calls.filter(([, options]) => options.method === "HEAD")).toHaveLength(1);
     expect(mocks.settings).toHaveBeenCalledTimes(1);
     expect(fetch.mock.calls.every(([, options]) => options.redirect === "manual" && options.signal instanceof AbortSignal)).toBe(true);
   });
@@ -33,7 +34,8 @@ describe("local guarded snapshot negotiation", () => {
     vi.stubGlobal("fetch", fetch);
     const result = await importSourceUrlDirect({ url: "https://local.subboost.test/sub" });
     expect(result).toMatchObject({ ok: true, parsedNodes: [expect.objectContaining({ type: "ss" })] });
-    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(fetch.mock.calls.filter(([, options]) => options.method === "GET")).toHaveLength(4);
+    expect(fetch.mock.calls.filter(([, options]) => options.method === "HEAD")).toHaveLength(1);
     expect(fetch.mock.calls.every(([url]) => url === "https://local.subboost.test/sub")).toBe(true);
   });
 });
